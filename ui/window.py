@@ -3,12 +3,13 @@ import math
 import sys
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal, QTimer, Qt
-from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,
- QStackedWidget,QLineEdit,QListWidget,QFileDialog,QMessageBox,QSpinBox,QCheckBox,
+ QStackedWidget,QLineEdit,QListWidget,QFileDialog,QMessageBox,QCheckBox,
  QSystemTrayIcon,QMenu)
 from core.game_monitor import GameMonitor,validate_game
 from core.autostart import set_autostart
+from core.task_engine import REWARD_MINUTES
 
 def duration(ms):
     seconds=math.ceil(ms/1000)
@@ -16,11 +17,7 @@ def duration(ms):
     return f'{h:02}:{m:02}:{s:02}'
 
 def icon():
-    pix=QPixmap(64,64); pix.fill(QColor('#171c2d'))
-    painter=QPainter(pix); painter.setPen(QColor('#80ebc1'))
-    font=painter.font(); font.setPixelSize(36); font.setBold(True); painter.setFont(font)
-    painter.drawText(pix.rect(),Qt.AlignmentFlag.AlignCenter,'W'); painter.end()
-    return QIcon(pix)
+    return QIcon(str(Path(__file__).resolve().parents[1]/'assets'/'wrst-gate.ico'))
 
 class MonitorThread(QThread):
     updated=Signal(dict)
@@ -42,7 +39,7 @@ class Window(QMainWindow):
         self.setStyleSheet('''
         QWidget { background: #101522; color: #e8eef8; font: 16px "Segoe UI"; }
         QLabel { padding: 6px; } QPushButton { background: #26344a; border: 0; border-radius: 9px; padding: 12px 22px; }
-        QPushButton:hover { background: #35516a; } QLineEdit, QListWidget, QSpinBox { background: #1a2435; border: 1px solid #364962; border-radius: 8px; padding: 12px; }
+        QPushButton:hover { background: #35516a; } QLineEdit, QListWidget { background: #1a2435; border: 1px solid #364962; border-radius: 8px; padding: 12px; }
         QCheckBox { padding: 10px; }''')
         outer=QWidget(); layout=QVBoxLayout(outer); layout.setContentsMargins(28,24,28,24)
         header=QLabel('WRST  /  GATE'); header.setStyleSheet('color:#80ebc1; font-size:24px; font-weight:700;'); layout.addWidget(header)
@@ -61,14 +58,13 @@ class Window(QMainWindow):
         self.check=QPushButton('Проверить'); self.check.clicked.connect(self.submit); self.answer.returnPressed.connect(self.submit); tl.addWidget(self.check)
         self.result=QLabel(); self.result.setWordWrap(True); tl.addWidget(self.result)
         self.restart=QPushButton('Начать новое прохождение'); self.restart.clicked.connect(self.new_round); tl.addWidget(self.restart); tl.addStretch()
-        settings,sl=self.page(); sl.addWidget(QLabel('Контролируемые .exe — по полному пути'))
+        settings,sl=self.page(); self.games_label=QLabel(); sl.addWidget(self.games_label)
         self.games=QListWidget(); sl.addWidget(self.games)
         row=QHBoxLayout(); sl.addLayout(row)
         add=QPushButton('Добавить игру'); add.clicked.connect(self.add_game); row.addWidget(add)
         remove=QPushButton('Удалить выбранную'); remove.clicked.connect(self.remove_game); row.addWidget(remove)
         self.enabled=QCheckBox('Контроль игр включён'); self.enabled.setChecked(db.setting('enabled',True)); self.enabled.toggled.connect(lambda v:db.set_setting('enabled',v)); sl.addWidget(self.enabled)
-        sl.addWidget(QLabel('Минут за правильный ответ (1–240)'))
-        self.minutes=QSpinBox(); self.minutes.setRange(1,240); self.minutes.setValue(db.setting('minutes',20)); self.minutes.valueChanged.connect(lambda v:db.set_setting('minutes',v)); sl.addWidget(self.minutes)
+        sl.addWidget(QLabel(f'За правильный ответ: {REWARD_MINUTES} минут'))
         self.auto=QCheckBox('Запускать вместе с Windows'); self.auto.setChecked(db.setting('autostart',False)); self.auto.setEnabled(sys.platform=='win32'); self.auto.toggled.connect(self.autostart); sl.addWidget(self.auto)
         sl.addWidget(QLabel('Контроль можно отключить в любой момент. Выход доступен в трее.'))
         self.setCentralWidget(outer)
@@ -81,8 +77,10 @@ class Window(QMainWindow):
     def page(self):
         w=QWidget(); l=QVBoxLayout(w); self.pages.addWidget(w); return w,l
     def refresh_balance(self):
+        self.refresh_games()
         self.balance.setText(duration(self.wallet.milliseconds)); self.stats.setText(f'Решено задач: {self.db.count()}  ·  Прохождение {self.engine.round}')
         self.status.setText('Контроль отключён' if not self.db.setting('enabled',True) else ('Игры разрешены' if self.wallet.milliseconds else 'Нет игрового времени'))
+        self.tray.setToolTip(f'WRST Gate · {self.balance.text()}\n{self.status.text()}')
     def update_status(self,state):
         self.session.setText(f"Сессия: {duration(state['session'])}  ·  Активно игр: {len(state['active'])}")
         self.warning.setText(f"Недоступно процессов: {state['denied']}. Контроль программ с повышенными правами может быть недоступен." if state['denied'] else '')
@@ -92,17 +90,26 @@ class Window(QMainWindow):
     def load_task(self):
         self.task=self.engine.current(); done=self.task is None
         self.restart.setVisible(done); self.check.setEnabled(not done); self.answer.setEnabled(not done)
-        self.topic.setText(f"{self.task['topic']}  ·  +{self.db.setting('minutes',20)} минут" if self.task else 'Прохождение завершено')
+        self.topic.setText(f"{self.task['topic']}  ·  +{REWARD_MINUTES} минут" if self.task else 'Прохождение завершено')
         self.statement.setText(self.task['text'] if self.task else 'Все 35 задач решены. Можно начать новое прохождение.'); self.answer.clear()
     def submit(self):
         if not self.task: return
         result=self.engine.submit(self.task['id'],self.answer.text())
         if result=='correct':
-            self.result.setText(f"Верно! Начислено {self.db.setting('minutes',20)} минут."); self.load_task(); self.refresh_balance()
+            self.result.setText(f"Верно! Начислено {REWARD_MINUTES} минут."); self.load_task(); self.refresh_balance()
         elif result=='wrong': self.result.setText('Неверно. Попробуйте ещё раз — штрафа нет.')
         else: self.result.setText('Эта задача уже зачтена.'); self.load_task()
     def new_round(self): self.engine.new_round(); self.result.clear(); self.load_task()
-    def refresh_games(self): self.games.clear(); self.games.addItems(self.db.games())
+    def refresh_games(self):
+        paths=self.db.games()
+        shown=[self.games.item(i).text() for i in range(self.games.count())]
+        if shown!=paths:
+            selected=self.games.currentItem()
+            previous=selected.text() if selected else None
+            self.games.clear(); self.games.addItems(paths)
+            for i,path in enumerate(paths):
+                if path==previous: self.games.setCurrentRow(i)
+        self.games_label.setText(f'Контролируемые игры: {len(paths)} · по полному пути к .exe')
     def add_game(self):
         path,_=QFileDialog.getOpenFileName(self,'Выберите исполняемый файл игры','','Приложения (*.exe)')
         if path:

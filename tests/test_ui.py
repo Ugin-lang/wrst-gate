@@ -16,6 +16,7 @@ class UITests(unittest.TestCase):
         app=QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as folder:
             db=Database(Path(folder)/'gate.db'); wallet=TimeWallet(db)
+            db.set_setting('minutes',240)  # Legacy reward must be ignored.
             engine=TaskEngine(db,wallet,Path(__file__).parents[1]/'assets/tasks.json')
             window=Window(db,wallet,engine)
             try:
@@ -24,9 +25,18 @@ class UITests(unittest.TestCase):
                     window.pages.setCurrentIndex(i); app.processEvents()
                     self.assertEqual(window.pages.currentIndex(),i)
                 window.pages.setCurrentIndex(1); window.answer.setText('wrong'); window.submit(); self.assertEqual(wallet.milliseconds,0)
-                window.answer.setText(window.task['answer']); window.submit(); self.assertEqual(wallet.milliseconds,1200000)
+                window.answer.setText(window.task['answer']); window.submit(); self.assertEqual(wallet.milliseconds,600000)
                 window.enabled.setChecked(False); self.assertFalse(db.setting('enabled'))
-                window.minutes.setValue(30); self.assertEqual(db.setting('minutes'),30)
+                self.assertFalse(hasattr(window,'minutes'))
+                self.assertIn('+10 минут',window.topic.text())
+                self.assertIn('Начислено 10 минут',window.result.text())
+                external=Database(Path(folder)/'gate.db')
+                try:
+                    external.add_game('C:/Games/example.exe')
+                    window.refresh_balance()
+                    self.assertEqual(window.games.count(),1)
+                    self.assertIn('1',window.games_label.text())
+                finally: external.close()
                 app.processEvents()
                 if os.environ.get('WRST_SCREENSHOT'):
                     for i in range(3):

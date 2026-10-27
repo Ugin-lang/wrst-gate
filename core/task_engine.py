@@ -1,6 +1,8 @@
 import json
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException
 from pathlib import Path
+
+REWARD_MINUTES = 10
 
 class TaskEngine:
     def __init__(self,db,wallet,bank):
@@ -24,8 +26,8 @@ class TaskEngine:
             value=Decimal(answer.strip().replace(',','.'))
             target=Decimal(str(expected))
             return value.is_finite() and abs(value-target)<=Decimal('0.000001')
-        except InvalidOperation: return False
+        except DecimalException: return False
     def submit(self,task_id,answer):
         task=next((t for t in self.tasks if t['id']==task_id),None)
         if task is None or not self.matches(answer,task['answer']): return 'wrong'
-        return 'correct' if self.wallet.reward(task_id,self.round,self.db.setting('minutes',20)) else 'duplicate'
+        return 'correct' if self.wallet.reward(task_id,self.round,REWARD_MINUTES) else 'duplicate'

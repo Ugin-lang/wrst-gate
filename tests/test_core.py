@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock
@@ -70,7 +71,7 @@ class CoreTests(unittest.TestCase):
         self.assertIsNone(engine.current()); self.assertTrue(engine.new_round()); self.assertIsNotNone(engine.current())
     def test_answer_parser(self):
         self.assertTrue(TaskEngine.matches(' 0,2500001 ','0.25'))
-        for value in ['nan','Infinity','__import__("os")','1/4','']:
+        for value in ['nan','Infinity','__import__("os")','1/4','','1e999999999999999999']:
             self.assertFalse(TaskEngine.matches(value,'0.25'))
     @unittest.skipUnless(os.name=='posix' and Path('/bin/sleep').exists(),'POSIX safe process integration')
     def test_real_safe_process_block(self):
@@ -83,5 +84,21 @@ class CoreTests(unittest.TestCase):
             monitor.tick(); child.wait(timeout=5); self.assertIsNotNone(child.returncode)
         finally:
             if child.poll() is None: child.kill(); child.wait()
+
+    @unittest.skipUnless(os.name=='nt','Windows safe process integration')
+    def test_real_windows_safe_process_block(self):
+        executable=Path(sys.executable).with_name('wrst-safe-test-game.exe')
+        self.assertFalse(executable.exists())
+        shutil.copy2(sys.executable,executable)
+        child=None
+        try:
+            self.db.add_game(validate_game(str(executable)))
+            child=subprocess.Popen([str(executable),'-c','import time; time.sleep(30)'])
+            monitor=GameMonitor(self.db,self.wallet,processes=lambda:[psutil.Process(child.pid)])
+            monitor.tick(); child.wait(timeout=5)
+            self.assertIsNotNone(child.returncode)
+        finally:
+            if child is not None and child.poll() is None: child.kill(); child.wait()
+            executable.unlink()
 
 if __name__=='__main__': unittest.main()
